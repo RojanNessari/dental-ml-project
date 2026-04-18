@@ -270,5 +270,36 @@ def print_directory_contents(path: Path) -> None:
 
 
 
+def count_images(folder: Path) -> int:
+    """
+    Count the number of image files in a given folder.
+
+    Parameters
+    ----------
+    folder : Path
+        Path to the directory containing image files.
+
+    Returns
+    -------
+    int
+        Number of files found in the directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the folder does not exist.
+
+    Example
+    -------
+    >>> from pathlib import Path
+    >>> count_images(Path("/kaggle/working/train/images"))
+    """
+    if not folder.exists():
+        raise FileNotFoundError(f"Folder not found: {folder}")
+
+    return len([p for p in folder.iterdir() if p.is_file()])
+
+
+
 
 
