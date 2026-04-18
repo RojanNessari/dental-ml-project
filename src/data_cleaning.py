@@ -24,6 +24,11 @@ import yaml
 from config import VALID_IMAGE_SUFFIXES
 from io_utils import ensure_dir
 from collections import Counter
+import random
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
 
 
 
