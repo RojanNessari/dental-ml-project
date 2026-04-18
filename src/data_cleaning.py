@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 import shutil
 import yaml
-
 from config import VALID_IMAGE_SUFFIXES
 from io_utils import ensure_dir
+from collections import Counter
+
+
 
 
 def is_image_file(path: Path) -> bool:
@@ -220,3 +222,129 @@ def build_clean_dataset(
         yaml.safe_dump(yaml_dict, f, sort_keys=False, allow_unicode=True)
 
     return summary
+
+##--------------------------------------------------------##
+
+
+def collect_class_id_summary(dataset_root: Path) -> Dict[str, list[int]]:
+    """
+    Collect the sorted list of class IDs present in each dataset split.
+
+    Parameters
+    ----------
+    dataset_root : Path
+        Root directory of a YOLO-format dataset containing split folders such as
+        `train`, `valid`, and `test`.
+
+    Returns
+    -------
+    Dict[str, list[int]]
+        Dictionary mapping each split name to the sorted list of class IDs
+        observed in its label files.
+
+    Example
+    -------
+    >>> summary = collect_class_id_summary(Path("/kaggle/working/project_artifacts/dental-vzrad2-yolo26-clean"))
+    >>> print(summary["train"])
+    """
+    split_summary: Dict[str, list[int]] = {}
+
+    for split in ["train", "valid", "test"]:
+        labels_dir = dataset_root / split / "labels"
+        class_ids = set()
+
+        if not labels_dir.exists():
+            split_summary[split] = []
+            continue
+
+        for label_file in labels_dir.glob("*.txt"):
+            with open(label_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    try:
+                        cls_id = int(float(parts[0]))
+                        class_ids.add(cls_id)
+                    except ValueError:
+                        continue
+
+        split_summary[split] = sorted(class_ids)
+
+    return split_summary
+
+
+def print_class_id_summary(dataset_root: Path, title: str = "Class-ID summary") -> None:
+    """
+    Print the class IDs found in each dataset split.
+
+    Parameters
+    ----------
+    dataset_root : Path
+        Root directory of a YOLO-format dataset.
+    title : str
+        Title printed before the summary.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> print_class_id_summary(Path("/kaggle/working/project_artifacts/dental-vzrad2-yolo26-clean"))
+    """
+    summary = collect_class_id_summary(dataset_root)
+
+    print(title)
+    for split in ["train", "valid", "test"]:
+        print(f"{split} class IDs: {summary.get(split, [])}")
+
+
+
+
+
+def collect_class_frequency(dataset_root: Path) -> Dict[str, Counter]:
+    """
+    Count the number of annotation instances per class for each dataset split.
+
+    Parameters
+    ----------
+    dataset_root : Path
+        Root directory of a YOLO-format dataset.
+
+    Returns
+    -------
+    Dict[str, Counter]
+        Dictionary mapping each split to a Counter of class frequencies.
+
+    Example
+    -------
+    >>> freq = collect_class_frequency(Path("/kaggle/working/project_artifacts/dental-vzrad2-yolo26-clean"))
+    >>> print(freq["train"])
+    """
+    split_freq: Dict[str, Counter] = {}
+
+    for split in ["train", "valid", "test"]:
+        labels_dir = dataset_root / split / "labels"
+        counter = Counter()
+
+        if not labels_dir.exists():
+            split_freq[split] = counter
+            continue
+
+        for label_file in labels_dir.glob("*.txt"):
+            with open(label_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    try:
+                        cls_id = int(float(parts[0]))
+                        counter[cls_id] += 1
+                    except ValueError:
+                        continue
+
+        split_freq[split] = counter
+
+    return split_freq
+
