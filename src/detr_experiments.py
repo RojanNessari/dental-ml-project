@@ -1,8 +1,9 @@
 """DETR experiment helpers for the dental pathology project.
 
 This module keeps the DETR pipeline modular and notebook-friendly. It handles
-runtime preparation, repository patching, training, evaluation, and metric
-extraction so that the notebook can remain focused on reporting and analysis.
+runtime preparation, repository patching, training, evaluation, saved-log
+parsing, and metric extraction so that the notebook can remain focused on
+reporting and analysis.
 
 Example
 -------
@@ -15,11 +16,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
 import json
 import re
 import shutil
 import subprocess
+
+import pandas as pd
 
 
 @dataclass
@@ -45,6 +48,7 @@ class DetrExperiment:
     eval_enabled : bool
         Whether this run should be evaluated.
     """
+
     key: str
     title: str
     epochs: int
@@ -55,8 +59,24 @@ class DetrExperiment:
     eval_enabled: bool = True
 
 
-def run_shell_command(command: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    """Run a shell command and capture stdout/stderr."""
+def run_shell_command(
+    command: str,
+    cwd: Optional[Path] = None,
+) -> subprocess.CompletedProcess:
+    """Run a shell command and capture stdout/stderr.
+
+    Parameters
+    ----------
+    command : str
+        Shell command to run.
+    cwd : Optional[Path]
+        Working directory.
+
+    Returns
+    -------
+    subprocess.CompletedProcess
+        Completed subprocess result.
+    """
     return subprocess.run(
         command,
         shell=True,
@@ -67,7 +87,18 @@ def run_shell_command(command: str, cwd: Optional[Path] = None) -> subprocess.Co
 
 
 def safe_reset_dir(path: Path) -> Path:
-    """Delete and recreate a directory."""
+    """Delete and recreate a directory.
+
+    Parameters
+    ----------
+    path : Path
+        Target directory.
+
+    Returns
+    -------
+    Path
+        Recreated path.
+    """
     if path.exists():
         shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -80,6 +111,12 @@ def prepare_detr_dataset_structure(
 ) -> Dict[str, str]:
     """Create official DETR-style dataset folders from the cleaned COCO dataset.
 
+    Notes
+    -----
+    The official DETR code still tries to build a training dataset during
+    evaluation. For that reason, the `coco_test` folder includes a dummy
+    `train2017` and `instances_train2017.json`, both copied from the test split.
+
     Parameters
     ----------
     coco_root : Path
@@ -91,10 +128,6 @@ def prepare_detr_dataset_structure(
     -------
     Dict[str, str]
         Paths to the train/validation and test roots.
-
-    Example
-    -------
-    >>> # prepare_detr_dataset_structure(Path("/coco"), Path("/detr_data"))
     """
     coco_ann = coco_root / "annotations"
     trainval_root = detr_root / "coco_trainval"
@@ -106,17 +139,33 @@ def prepare_detr_dataset_structure(
     (trainval_root / "annotations").mkdir(parents=True, exist_ok=True)
     (test_root / "annotations").mkdir(parents=True, exist_ok=True)
 
+    # Train/validation structure
     shutil.copytree(coco_root / "train" / "images", trainval_root / "train2017")
     shutil.copytree(coco_root / "valid" / "images", trainval_root / "val2017")
 
-    shutil.copy2(coco_ann / "instances_train.json",
-                 trainval_root / "annotations" / "instances_train2017.json")
-    shutil.copy2(coco_ann / "instances_valid.json",
-                 trainval_root / "annotations" / "instances_val2017.json")
+    shutil.copy2(
+        coco_ann / "instances_train.json",
+        trainval_root / "annotations" / "instances_train2017.json",
+    )
+    shutil.copy2(
+        coco_ann / "instances_valid.json",
+        trainval_root / "annotations" / "instances_val2017.json",
+    )
 
+    # Test structure
     shutil.copytree(coco_root / "test" / "images", test_root / "val2017")
-    shutil.copy2(coco_ann / "instances_test.json",
-                 test_root / "annotations" / "instances_val2017.json")
+    shutil.copy2(
+        coco_ann / "instances_test.json",
+        test_root / "annotations" / "instances_val2017.json",
+    )
+
+    # Workaround for official DETR eval:
+    # it still expects a train split to exist even during --eval
+    shutil.copytree(coco_root / "test" / "images", test_root / "train2017")
+    shutil.copy2(
+        coco_ann / "instances_test.json",
+        test_root / "annotations" / "instances_train2017.json",
+    )
 
     return {
         "trainval_root": str(trainval_root),
@@ -158,7 +207,7 @@ def download_pretrained_checkpoint(local_detr_repo: Path) -> Path:
 
 
 def patch_detr_main(local_detr_repo: Path, custom_num_classes: int = 13) -> None:
-    """Patch DETR main.py for custom class count and frequent checkpoint saving."""
+    """Patch DETR main.py for custom class count and compatibility fixes."""
     main_py = local_detr_repo / "main.py"
     text = main_py.read_text(encoding="utf-8")
 
@@ -166,12 +215,12 @@ def patch_detr_main(local_detr_repo: Path, custom_num_classes: int = 13) -> None
         text = text.replace(
             "parser.add_argument('--dataset_file', default='coco')",
             "parser.add_argument('--dataset_file', default='coco')\n"
-            f"    parser.add_argument('--custom_num_classes', default={custom_num_classes}, type=int)"
+            f"    parser.add_argument('--custom_num_classes', default={custom_num_classes}, type=int)",
         )
 
     text = text.replace(
         "num_classes = 91 if args.dataset_file != 'coco_panoptic' else 250",
-        "num_classes = args.custom_num_classes if args.dataset_file != 'coco_panoptic' else 250"
+        "num_classes = args.custom_num_classes if args.dataset_file != 'coco_panoptic' else 250",
     )
 
     old_load = "checkpoint = torch.load(args.resume, map_location='cpu')"
@@ -232,19 +281,7 @@ def prepare_detr_runtime(
     local_detr_repo: Path,
     custom_num_classes: int = 13,
 ) -> Dict[str, str]:
-    """Prepare all DETR runtime dependencies in one call.
-
-    This function:
-    1. creates DETR-compatible dataset folders
-    2. clones the DETR repository
-    3. downloads the pretrained checkpoint
-    4. patches DETR for custom classes and compatibility issues
-
-    Returns
-    -------
-    Dict[str, str]
-        Dictionary containing the main runtime paths.
-    """
+    """Prepare all DETR runtime dependencies in one call."""
     dataset_paths = prepare_detr_dataset_structure(coco_root, detr_data_root)
     clone_detr_repo(local_detr_repo)
     ckpt = download_pretrained_checkpoint(local_detr_repo)
@@ -310,10 +347,19 @@ def evaluate_detr(
 
 
 def parse_detr_eval_output(output_text: str) -> Dict[str, float | None]:
-    """Extract AP metrics from DETR evaluation stdout."""
-    map_5095 = re.search(r"Average Precision.*IoU=0.50:0.95.*= ([0-9.]+)", output_text)
-    map_50 = re.search(r"Average Precision.*IoU=0.50\s+\|.*= ([0-9.]+)", output_text)
-    map_75 = re.search(r"Average Precision.*IoU=0.75\s+\|.*= ([0-9.]+)", output_text)
+    """Extract main AP metrics from DETR evaluation stdout."""
+    map_5095 = re.search(
+        r"Average Precision\s+\(AP\)\s+@\[\s*IoU=0\.50:0\.95\s+\|\s*area=\s*all\s+\|\s*maxDets=\s*100\s*\]\s*=\s*([0-9.\-]+)",
+        output_text,
+    )
+    map_50 = re.search(
+        r"Average Precision\s+\(AP\)\s+@\[\s*IoU=0\.50\s+\|\s*area=\s*all\s+\|\s*maxDets=\s*100\s*\]\s*=\s*([0-9.\-]+)",
+        output_text,
+    )
+    map_75 = re.search(
+        r"Average Precision\s+\(AP\)\s+@\[\s*IoU=0\.75\s+\|\s*area=\s*all\s+\|\s*maxDets=\s*100\s*\]\s*=\s*([0-9.\-]+)",
+        output_text,
+    )
 
     return {
         "mAP@0.5:0.95": float(map_5095.group(1)) if map_5095 else None,
@@ -323,7 +369,7 @@ def parse_detr_eval_output(output_text: str) -> Dict[str, float | None]:
 
 
 def save_metrics_json(metrics: dict, output_path: Path) -> None:
-    """Save metrics to JSON."""
+    """Save metrics dictionary to JSON."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=4)
@@ -332,5 +378,60 @@ def save_metrics_json(metrics: dict, output_path: Path) -> None:
 def checkpoint_exists(output_dir: Path) -> bool:
     """Check whether the main DETR checkpoint exists."""
     return (output_dir / "checkpoint.pth").exists()
+
+
+def parse_detr_json_log(log_path: Path) -> pd.DataFrame:
+    """Parse official DETR log.txt where each line is a JSON object.
+
+    Parameters
+    ----------
+    log_path : Path
+        Path to DETR log.txt.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing one row per epoch.
+    """
+    rows = []
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not rows:
+        raise ValueError(f"No JSON rows found in {log_path}")
+
+    return pd.DataFrame(rows)
+
+
+def extract_coco_metric(series, index: int) -> list:
+    """Extract one COCO metric from DETR's test_coco_eval_bbox list column.
+
+    Parameters
+    ----------
+    series : pandas.Series
+        Series whose entries are lists of COCO metrics.
+    index : int
+        Metric index to extract.
+
+    Returns
+    -------
+    list
+        Extracted metric values.
+    """
+    values = []
+    for item in series:
+        if isinstance(item, list) and len(item) > index:
+            values.append(item[index])
+        else:
+            values.append(None)
+    return values
 
 
