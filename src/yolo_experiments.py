@@ -450,3 +450,181 @@ def final_test_metrics_to_dict(exp: YoloExperiment, metrics_obj) -> dict:
     }
 
 
+
+def show_artifact_image(image_path: str | Path, title: str, figsize: tuple[int, int] = (12, 8)) -> None:
+    """
+    Display a saved YOLO artifact image such as results.png, PR curve, or confusion matrix.
+
+    Parameters
+    ----------
+    image_path : str | Path
+        Path to the image artifact.
+    title : str
+        Title displayed above the image.
+    figsize : tuple[int, int]
+        Figure size.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> # show_artifact_image("/tmp/results.png", "Training Curves")
+    """
+    image_path = Path(image_path)
+    print("Artifact path:", image_path)
+
+    if not image_path.exists():
+        print("File not found.")
+        return
+
+    img = Image.open(image_path)
+    plt.figure(figsize=figsize)
+    plt.imshow(img)
+    plt.title(title)
+    plt.axis("off")
+    plt.show()
+
+
+def show_experiment_core_artifacts(exp_title: str, run_dir: str | Path) -> None:
+    """
+    Show the most important saved YOLO artifact images for one run.
+
+    Parameters
+    ----------
+    exp_title : str
+        Human-readable experiment title.
+    run_dir : str | Path
+        Directory containing YOLO output artifacts.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> # show_experiment_core_artifacts("YOLO11s", "/kaggle/working/dental_project/yolo11s_30_val")
+    """
+    run_dir = Path(run_dir)
+
+    artifact_map = {
+        "results.png": f"{exp_title} - training curves",
+        "BoxF1_curve.png": f"{exp_title} - F1 curve",
+        "BoxPR_curve.png": f"{exp_title} - precision-recall curve",
+        "confusion_matrix_normalized.png": f"{exp_title} - normalized confusion matrix",
+    }
+
+    for filename, title in artifact_map.items():
+        path = run_dir / filename
+        if path.exists():
+            show_artifact_image(path, title)
+
+
+def load_results_csv(results_csv_path: str | Path) -> pd.DataFrame | None:
+    """
+    Load a YOLO results.csv file if it exists.
+
+    Parameters
+    ----------
+    results_csv_path : str | Path
+        Path to YOLO results.csv.
+
+    Returns
+    -------
+    pd.DataFrame | None
+        Loaded DataFrame, or None if file does not exist.
+
+    Example
+    -------
+    >>> # df = load_results_csv("/tmp/results.csv")
+    """
+    results_csv_path = Path(results_csv_path)
+    if not results_csv_path.exists():
+        print("results.csv not found:", results_csv_path)
+        return None
+
+    return pd.read_csv(results_csv_path)
+
+
+def plot_results_csv_metrics(results_csv_path: str | Path, title_prefix: str = "YOLO") -> None:
+    """
+    Plot key metrics from a YOLO results.csv file.
+
+    Parameters
+    ----------
+    results_csv_path : str | Path
+        Path to YOLO results.csv.
+    title_prefix : str
+        Prefix used in plot titles.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> # plot_results_csv_metrics("/tmp/results.csv", "YOLO11s")
+    """
+    df = load_results_csv(results_csv_path)
+    if df is None:
+        return
+
+    df.columns = [c.strip() for c in df.columns]
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(df["epoch"], df["metrics/mAP50(B)"], marker="o", label="mAP@50")
+    plt.plot(df["epoch"], df["metrics/mAP50-95(B)"], marker="o", label="mAP@50-95")
+    plt.xlabel("Epoch")
+    plt.ylabel("Score")
+    plt.title(f"{title_prefix} - validation performance over epochs")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    plt.figure(figsize=(12, 5))
+    if "train/box_loss" in df.columns:
+        plt.plot(df["epoch"], df["train/box_loss"], marker="o", label="Train box loss")
+    if "val/box_loss" in df.columns:
+        plt.plot(df["epoch"], df["val/box_loss"], marker="o", label="Val box loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"{title_prefix} - loss curves")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def print_model_selection_reason(comparison_df: pd.DataFrame) -> None:
+    """
+    Print a short model-selection summary from the comparison table.
+
+    Parameters
+    ----------
+    comparison_df : pd.DataFrame
+        Comparison table sorted by performance.
+
+    Returns
+    -------
+    None
+
+    Example
+    -------
+    >>> # print_model_selection_reason(comparison_df)
+    """
+    if comparison_df.empty:
+        print("No comparison results available.")
+        return
+
+    best_row = comparison_df.iloc[0]
+    print("Selected YOLO baseline:", best_row["Model"])
+    print("Reason:")
+    print(
+        f"Selected because it achieved the best validation performance with "
+        f"mAP50={best_row['mAP50']:.6f}, "
+        f"mAP50-95={best_row['mAP50-95']:.6f}, "
+        f"Precision={best_row['Precision']:.6f}, "
+        f"Recall={best_row['Recall']:.6f}."
+    )
+
+
